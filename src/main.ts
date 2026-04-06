@@ -179,10 +179,14 @@ controls.addEventListener('change', () => requestRenderIfNotRequested());
 // --- Objects ---
 // (No fixed ground mesh, just the infinite ground)
 
-const grid = new InfiniteGround(new THREE.Color(0xbcbcbc), 800);
+const grid = new InfiniteGround(new THREE.Color(0xffffff), 800);
 scene.add(grid);
 
 const northArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0.05, 0), 10, 0xff0000);
+northArrow.traverse(child => {
+  child.castShadow = false;
+  child.receiveShadow = false;
+});
 scene.add(northArrow);
 
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
@@ -190,24 +194,34 @@ scene.add(ambientLight);
 
 const sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.width = 512;
-sunLight.shadow.mapSize.height = 512;
+// High resolution for scientific accuracy
+sunLight.shadow.mapSize.width = 2048;
+sunLight.shadow.mapSize.height = 2048;
 sunLight.shadow.camera.near = 1;
-sunLight.shadow.camera.far = 500;
-sunLight.shadow.camera.left = -10;
-sunLight.shadow.camera.right = 10;
-sunLight.shadow.camera.top = 10;
-sunLight.shadow.camera.bottom = -10;
+sunLight.shadow.camera.far = 2000;
 scene.add(sunLight);
+
+function updateShadowCamera() {
+  // Dynamically adjust shadow frustum to fit the wall dimensions
+  const size = Math.max(params.wallWidth, params.wallHeight) * 1.5;
+  sunLight.shadow.camera.left = -size;
+  sunLight.shadow.camera.right = size;
+  sunLight.shadow.camera.top = size;
+  sunLight.shadow.camera.bottom = -size;
+  sunLight.shadow.camera.updateProjectionMatrix();
+}
 
 const lightTarget = new THREE.Object3D();
 scene.add(lightTarget);
 sunLight.target = lightTarget;
 
+
 const sunVisualizer = new THREE.Mesh(
-  new THREE.SphereGeometry(3, 32, 32),
+  new THREE.SphereGeometry(15, 32, 32),
   new THREE.MeshBasicMaterial({ color: 0xffff00 })
 );
+sunVisualizer.castShadow = false;
+sunVisualizer.receiveShadow = false;
 scene.add(sunVisualizer);
 
 const wallGroup = new THREE.Group();
@@ -257,7 +271,7 @@ function updateObjects() {
   shape.holes.push(hole);
 
   const wallGeometry = new THREE.ExtrudeGeometry(shape, { depth: params.wallThickness, bevelEnabled: false });
-  wallMesh = new THREE.Mesh(wallGeometry, new THREE.MeshStandardMaterial({ color: 0xcccccc }));
+  wallMesh = new THREE.Mesh(wallGeometry, new THREE.MeshStandardMaterial({ color: 0xffffff }));
   wallMesh.castShadow = true;
   wallMesh.receiveShadow = true;
   wallMesh.position.set(-params.wallWidth / 2, 0, -params.wallThickness / 2);
@@ -276,6 +290,7 @@ function updateObjects() {
   shadeGroup.add(shadeMesh);
   wallGroup.add(shadeGroup);
 
+  updateShadowCamera();
   updateUrl();
   renderer.shadowMap.needsUpdate = true;
   requestRenderIfNotRequested();
@@ -283,6 +298,8 @@ function updateObjects() {
 
 function updateSun() {
   const now = new Date();
+  // Using UTC time to ensure a specific hour across timezones, 
+  // or local time if preferred. Assuming local for user ease.
   const date = new Date(now.getFullYear(), params.month - 1, params.day);
   date.setHours(Math.floor(params.time), (params.time % 1) * 60, 0, 0);
 
@@ -290,24 +307,31 @@ function updateSun() {
   const altitude = sunPos.altitude; // in radians
   const azimuth = sunPos.azimuth;
 
+  // Stats update
   sunStats.currentTime = date.toISOString().replace('T', ' ').substring(0, 19);
   sunStats.latitude = params.latitude;
   sunStats.longitude = params.longitude;
   sunStats.altitude = (altitude * 180 / Math.PI);
   sunStats.azimuth = (azimuth * 180 / Math.PI);
 
-  const distance = 400000; 
-  const x = -Math.sin(azimuth) * Math.cos(altitude) * distance;
-  const y = Math.sin(altitude) * distance;
-  const z = Math.cos(azimuth) * Math.cos(altitude) * distance;
+  // High-precision direction vector
+  const x = -Math.sin(azimuth) * Math.cos(altitude);
+  const y = Math.sin(altitude);
+  const z = Math.cos(azimuth) * Math.cos(altitude);
 
-  sunLight.position.set(x / 1000, y / 1000, z / 1000);
-  sunVisualizer.position.set(x / 1000, y / 1000, z / 1000);
-  sky.material.uniforms['sunPosition'].value.set(x, y, z);
+  // Position the light far away for directional stability (500 units)
+  sunLight.position.set(x * 500, y * 500, z * 500); 
+  sunVisualizer.position.set(x * 1200, y * 1200, z * 1200);
+  sky.material.uniforms['sunPosition'].value.set(x * 400000, y * 400000, z * 400000);
   
   lightTarget.position.set(0, params.wallHeight / 2, 0);
   
-  if (altitude < -0.02) { // Allow sun to be slightly below horizon visually
+  // Shadows need to cover the origin from the light source
+  sunLight.shadow.camera.near = 1;
+  sunLight.shadow.camera.far = 1000;
+  sunLight.shadow.camera.updateProjectionMatrix();
+
+  if (altitude < -0.02) {
     sunLight.intensity = 0;
     ambientLight.intensity = 0.05;
     sunVisualizer.visible = false;
@@ -321,11 +345,9 @@ function updateSun() {
     const altDeg = altitude * 180 / Math.PI;
     
     if (altDeg < 2) {
-      // Sunset range: very low
       sunLight.color.lerpColors(sunsetColor, afternoonColor, Math.max(0, altDeg / 2));
       sunLight.intensity = THREE.MathUtils.lerp(0.8, 1.2, Math.max(0, altDeg / 2));
     } else if (altDeg < 15) {
-      // Afternoon range: low
       sunLight.color.lerpColors(afternoonColor, dayColor, (altDeg - 2) / 13);
       sunLight.intensity = THREE.MathUtils.lerp(1.2, 1.5, (altDeg - 2) / 13);
     } else {
@@ -333,11 +355,9 @@ function updateSun() {
       sunLight.intensity = 1.5;
     }
     
-    // Ambient light should be stronger to avoid black walls
     ambientLight.intensity = THREE.MathUtils.lerp(0.15, 0.5, Math.min(altDeg / 30, 1));
     ambientLight.color.copy(sunLight.color).lerp(new THREE.Color(0xffffff), 0.3);
     
-    // Sync visualizer color
     if (sunVisualizer.material instanceof THREE.MeshBasicMaterial) {
       sunVisualizer.material.color.copy(sunLight.color);
     }
